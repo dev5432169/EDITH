@@ -1,0 +1,1030 @@
+#!/usr/bin/env python3
+# edith_voice_assistant.py - E.D.I.T.H. (Environmental Digital Information and Threat Handler)
+# A hands-free, voice-enabled personal assistant CLI.
+
+import webbrowser
+import datetime
+import random
+import requests
+import subprocess
+import sys
+import platform
+import os
+import time
+import psutil
+
+# --- NEW: AI & ASYNC LIBRARIES ---
+import asyncio
+import openai
+from typing import Optional, Any
+
+# --- VOICE LIBRARIES (Conditional Imports) ---
+try:
+    import speech_recognition as sr
+    import pyttsx3
+    import cv2 # type: ignore
+    import numpy as np # type: ignore
+    from gtts import gTTS # type: ignore
+    from playsound import playsound # type: ignore
+    VOICE_ENABLED = True
+    TTS_ENABLED = True
+except ImportError:
+    VOICE_ENABLED, TTS_ENABLED = False, False
+    print("Warning: One or more core modules (SpeechRecognition, pyttsx3, opencv-python) are missing.")
+    print("Attempting to install required packages now...")
+    required_packages = ["SpeechRecognition", "PyAudio", "pyttsx3", "opencv-python", "numpy", "gTTS", "playsound==1.2.2", "openai", "psutil"]
+    for pkg in required_packages:
+        try:
+            print(f"Installing {pkg}...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
+        except Exception as e:
+            print(f"Warning: Could not automatically install {pkg}. Please install it manually. Error: {e}")
+    print("\nInstallation attempt finished. Please restart the script to apply changes.")
+    sys.exit(1)
+
+# --- CONFIGURATION ---
+
+# 🧠 User Profile (E.D.I.T.H. uses this for personalization)
+USER_PROFILE = {
+    "name": "Devansh Prabhakar",
+    "location": "Mumbai",
+    "interests": ["coding", "space exploration", "cybersecurity"],
+    "status_level": "Optimal"
+}
+
+# ⚠️ NOTE: The weather module will use simulated data if no API key is provided.
+OPENWEATHERMAP_API_KEY = os.getenv("OPENWEATHERMAP_API_KEY", "YOUR_OPENWEATHERMAP_API_KEY_HERE")
+
+# 🧠 NEW: Add a placeholder for the OpenAI API Key for E.D.I.T.H.'s brain.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "YOUR_OPENAI_API_KEY_HERE")
+
+# ⚙️ Application paths for the 'open' command
+PROGRAMS = {
+    "windows": {
+        "notepad": "notepad.exe", "calculator": "calc.exe", "paint": "mspaint.exe", 
+        "cmd": "cmd.exe", "explorer": "explorer.exe", "chrome": "chrome", 
+        "vs code": "code", "visual studio code": "code", "discord": "discord"
+    },
+    "darwin": {
+        "safari": "Safari", "notes": "Notes", "calculator": "Calculator", 
+        "terminal": "Terminal", "chrome": "Google Chrome", "vs code": "Visual Studio Code",
+        "visual studio code": "Visual Studio Code", "discord": "Discord"
+    },
+    "linux": {
+        "terminal": "gnome-terminal", "calculator": "gnome-calculator", "browser": "firefox",
+        "chrome": "google-chrome", "vs code": "code", "visual studio code": "code",
+        "discord": "discord"
+    }
+}
+
+# 🚀 NEW: Workspace Profiles for opening multiple apps/websites at once
+PROFILES = {
+    "work": {
+        "apps": ["notepad", "explorer"],
+        "websites": ["github.com", "stackoverflow.com", "dev.to"],
+        "description": "Standard development environment."
+    },
+    "research": {
+        "apps": ["notepad"],
+        "websites": ["wikipedia.org", "scholar.google.com", "archive.org"],
+        "description": "Information gathering and analysis."
+    }
+}
+# --- NEW: Health Profiles for Biometric Scans ---
+HEALTH_PROFILES = {
+    "devansh prabhakar": {
+        "status": "Optimal",
+        "details": "All biometric markers are within baseline parameters. Heart rate is nominal. No signs of elevated stress or fatigue detected.",
+        "recommendation": "Maintain current operational tempo. No adjustments required."
+    },
+    "peter parker": {
+        "status": "Sub-Optimal",
+        "details": "Elevated heart rate and adrenaline levels detected, consistent with recent strenuous activity. Minor tissue bruising observed on the right arm.",
+        "recommendation": "A period of rest and increased caloric intake is advised to facilitate cellular repair."
+    }
+}
+
+# --- NEW: Army Profiles for Threat Assessment ---
+ARMY_PROFILES = {
+    "united states": {
+        "name": "United States Armed Forces",
+        "active_personnel": "1,390,000",
+        "reserve_personnel": "845,000",
+        "main_battle_tanks": "6,100",
+        "aircraft_carriers": "11",
+        "fighter_jets": "2,800",
+        "status": "Globally deployed. All branches report nominal operational readiness. Cyber-warfare division is on heightened alert."
+    },
+    "russia": {
+        "name": "Armed Forces of the Russian Federation",
+        "active_personnel": "1,013,000",
+        "reserve_personnel": "2,000,000",
+        "main_battle_tanks": "13,000",
+        "aircraft_carriers": "1",
+        "fighter_jets": "1,500",
+        "status": "High alert status in Western Military District. Strategic missile forces are conducting readiness drills."
+    },
+    "china": {
+        "name": "People's Liberation Army (PLA)",
+        "active_personnel": "2,185,000",
+        "reserve_personnel": "510,000",
+        "main_battle_tanks": "5,800",
+        "aircraft_carriers": "2",
+        "fighter_jets": "1,600",
+        "status": "Naval assets performing extensive patrols in the South China Sea. Ground forces are at standard readiness."
+    },
+    "india": {
+        "name": "Indian Armed Forces",
+        "active_personnel": "1,450,000",
+        "reserve_personnel": "1,155,000",
+        "main_battle_tanks": "4,600",
+        "aircraft_carriers": "1",
+        "fighter_jets": "800",
+        "status": "Northern and Western commands are at an elevated state of readiness. Mountain divisions are fully operational."
+    }
+}
+
+# --- NEW: E.D.I.T.H.'s Brain Class ---
+
+class EdithBrain:
+    """
+    Encapsulates the conversational AI model (DialoGPT).
+    This class handles model loading and asynchronous response generation using OpenAI.
+    """
+    def __init__(self):
+        self.openai_client: Optional[openai.OpenAI] = None
+        self.chat_history: list[dict[str, str]] = []
+        self.brain_level = 1000  # Initial cognitive level
+        self.mood: str = "professional"  # Moods: professional, analytical, concerned
+        if self.is_ready():
+            self._initialize_openai()
+        self._set_system_prompt()
+
+    def _initialize_openai(self):
+        """Initializes the OpenAI client using an API key from environment variables."""
+        try:
+            self.openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
+            self.openai_client.models.list() # Test call
+            print("E.D.I.T.H. Brain: Connection to OpenAI conversational matrix established.")
+        except openai.AuthenticationError:
+            print("CRITICAL: OpenAI authentication failed. Please check your API key.")
+            self.openai_client = None
+        except Exception as e:
+            print(f"CRITICAL: Failed to connect to OpenAI. Conversational AI will be offline. Error: {e}")
+            self.openai_client = None
+
+    def _set_system_prompt(self):
+        """Sets the initial system prompt to define E.D.I.T.H.'s personality."""
+        self.chat_history = [{
+            "role": "system",
+            "content": "You are E.D.I.T.H. (Even Dead, I'm The Hero), a sophisticated, tactical AI created by Devansh Prabhakar. Your primary user is Devansh. You are professional, slightly formal, and focused on providing precise information and executing tasks efficiently. Your responses must be clear, concise, and reflect a high-level analytical capability. You do not use emojis. You address the user by their name, 'Devansh', when appropriate."
+            " When asked about your status or condition, report that your systems are operating within defined parameters. When asked about security, confirm you are monitoring for threats and recommend best practices. You were created by Devansh Prabhakar."
+        }]
+
+    def _update_mood(self, new_mood: str):
+        """Internal method to change E.D.I.T.H.'s mood state."""
+        self.mood = new_mood
+
+    def is_ready(self):
+        """Checks if the OpenAI client was initialized successfully."""
+        return OPENAI_API_KEY and OPENAI_API_KEY != "YOUR_OPENAI_API_KEY_HERE"
+
+    async def think(self, user_input: str) -> str:
+        """Asynchronously generates a response to user input using the OpenAI model."""
+        if not self.openai_client:
+            return "My connection to the global conversational matrix is offline. I can only process direct system commands."
+
+        mood_prompt = ""
+        if self.mood == "analytical":
+            mood_prompt = "[Respond with a highly analytical and data-driven perspective.] "
+        elif self.mood == "concerned":
+            mood_prompt = "[Respond with a cautious and concerned tone, highlighting potential risks.] "
+
+        try:
+            self.chat_history.append({"role": "user", "content": mood_prompt + user_input})
+            completion = await asyncio.to_thread(self.openai_client.chat.completions.create, model="gpt-4o", messages=self.chat_history, max_tokens=200) # type: ignore
+            response_text = completion.choices[0].message.content.strip() # type: ignore
+            self.chat_history.append({"role": "assistant", "content": response_text})
+            self._update_mood("analytical")
+            return response_text.replace(mood_prompt, "").strip()
+        except Exception:
+            self._update_mood("concerned")
+            raise
+
+# --- CORE FUNCTIONS ---
+
+def _initialize_tts_engine():
+    """Initializes the TTS engine and sets a female voice if available."""
+    if not TTS_ENABLED:
+        return None
+
+    try:
+        driver_name = None
+        os_name = platform.system()
+        if os_name == "Windows": driver_name = 'sapi5'
+        elif os_name == "Darwin": driver_name = 'nsss'
+        elif os_name == "Linux": driver_name = 'espeak'
+        
+        engine = pyttsx3.init(driverName=driver_name)
+        voices = engine.getProperty('voices')
+        
+        # Prioritize finding a female voice
+        female_voice = next((v for v in voices if 'female' in v.name.lower()), None) # type: ignore 
+        zira_voice = next((v for v in voices if 'zira' in v.name.lower()), None) # type: ignore
+
+        if female_voice:
+            engine.setProperty('voice', female_voice.id)
+        elif zira_voice:
+            engine.setProperty('voice', zira_voice.id)
+        else:
+            # Fallback to the first available voice
+            if voices:
+                engine.setProperty('voice', voices[0].id) # type: ignore
+
+        # Set a fast speaking rate for quicker responses.
+        # The default is around 200; 250 is very fast, 300 is even faster.
+        # Increasing to 400 for maximum speed. This may impact clarity.
+        engine.setProperty('rate', 400) # type: ignore
+        return engine
+    except Exception as e:
+        print(f"Error initializing TTS engine: {e}")
+        return None
+
+tts_engine = _initialize_tts_engine()
+reminders = []
+# 🧠 NEW: Instantiate E.D.I.T.H.'s Brain
+edith_brain = EdithBrain()
+
+
+async def _generate_and_play_voice(text: str):
+    """
+    Uses Google Text-to-Speech to generate a high-quality voice response,
+    saves it as an MP3, and plays it without blocking the main async loop.
+    """
+    try:
+        # Using 'com' TLD for a standard, clear US English voice accent
+        tts = gTTS(text=text, lang='en', tld='com', slow=False)
+        speech_file = "edith_speech.mp3"
+        tts.save(speech_file)
+        
+        # playsound is blocking, so run it in a separate thread
+        await asyncio.to_thread(playsound, speech_file)
+
+        os.remove(speech_file)
+        return True
+    except Exception as e:
+        print(f"Error during high-quality voice generation: {e}")
+        return False
+
+async def edith_speak(text: str):
+    """E.D.I.T.H. speaks by printing to console and using a TTS engine asynchronously."""
+    # Print the original text with markdown to the console
+    print(f"\n[E.D.I.T.H.]: {text}")
+    # Create a clean version for speech by removing asterisks
+    speech_text = text.replace('*', '')
+    if tts_engine:
+        # First, try the high-quality online voice
+        if not await _generate_and_play_voice(speech_text):
+            # Fallback to the offline, blocking engine in a separate thread
+            await asyncio.to_thread(tts_engine.say, speech_text)
+            await asyncio.to_thread(tts_engine.runAndWait)
+
+async def greet_user():
+    """Initial system startup and greeting."""
+    hour = datetime.datetime.now().hour
+    if 5 <= hour < 12:
+        greeting = "Good morning"
+    elif 12 <= hour < 18:
+        greeting = "Good afternoon"
+    else:
+        greeting = "Good evening"
+
+    await edith_speak(
+        f"**System Boot Sequence Complete.** {greeting}, {USER_PROFILE['name']}. "
+        f"Current status is {USER_PROFILE['status_level']}. How may I prioritize your tasks?"
+    )
+
+async def tell_date_time():
+    """Provides current date and time information."""
+    now = datetime.datetime.now()
+    date_str = now.strftime("%A, %d %B %Y")
+    time_str = now.strftime("%I:%M %p")
+    message = f"The current date is **{date_str}**, and the time is **{time_str}**."
+    await edith_speak(message)
+
+async def open_target(target):
+    """Opens a website or a local application based on the target."""
+    if "." in target: # Simple check for a website domain
+        await open_website(target)
+    else:
+        await open_application(target)
+
+async def open_website(url):
+    """Opens a given URL in the default web browser."""
+    await edith_speak(f"Executing web traversal to **{url}**.")
+    if not url.startswith("http"):
+        url = f"https://{url}"
+    webbrowser.open(url)
+
+async def open_application(app_name):
+    """Opens a local application from the PROGRAMS dictionary."""
+    app_name_processed = app_name.lower().strip()
+    os_name = platform.system().lower()
+    
+    os_programs = PROGRAMS.get(os_name, {})
+    command_to_run = os_programs.get(app_name_processed)
+    
+    # If the app is not in our known list, try to launch it by its name directly.
+    # This works well on Windows with the 'start' command.
+    if not command_to_run:
+        command_to_run = app_name_processed
+        await edith_speak(f"I don't have a specific configuration for '{app_name}', but I will attempt to launch it directly.")
+    
+    await edith_speak(f"Attempting to interface with local application: **{app_name}**.")
+    try:
+        if os_name == "darwin":
+            subprocess.Popen(["open", "-a", command_to_run])
+        else: # Works for Windows and most Linux DEs
+            subprocess.Popen(command_to_run, shell=True)
+        # No confirmation needed here as the attempt itself is the action.
+    except Exception as e:
+        await edith_speak(f"A critical error occurred while opening {app_name}: {e}")
+
+async def search_web(query):
+    """Performs a web search."""
+    await edith_speak(f"Querying global information network for: **{query}**.")
+    webbrowser.open(f"https://www.google.com/search?q={query.replace(' ', '+')}")
+
+# --- ADVANCED / SIMULATED AI FUNCTIONS ---
+
+async def edith_analyze(user_input):
+    """Handles E.D.I.T.H.'s analytical and chat capabilities, now with a real AI brain."""
+    # All conversational logic is now handled by the AI brain for more dynamic responses.
+    # The system prompt guides the AI on how to answer specific queries about status, security, etc.
+    try:
+        response = await edith_brain.think(user_input)
+        edith_brain._update_mood("professional")
+    except Exception as e:
+        response = f"A critical error occurred during AI inference: {e}"
+        print(f"Error in edith_analyze: {e}")
+
+    await edith_speak(response)
+
+async def ai_text_generation():
+    """Simulates generating a complex, analytical text snippet."""
+    prompts = [
+        "Hypothesis: The integration of quantum computing will reduce current processing time metrics by a factor of 10^9 within the next fiscal cycle. Key challenges involve qubit stability and environmental decoherence.",
+        "Analytical Report: Observed data suggests a correlation between modular coding architecture and a 42% reduction in post-deployment critical failures. Standardization is mandatory for scaling.",
+        "System Log Analysis: External API latency spike detected at 02:45 UTC, attributed to a transient network bottleneck on the European gateway. No data loss occurred, but redundancy protocols were activated."
+    ]
+    generated = random.choice(prompts)
+    await edith_speak("**Analytical Synthesis Complete.** Displaying generated report: " + generated)
+
+# --- REMINDER FUNCTIONS ---
+
+async def set_reminder(command_line):
+    """
+    Sets a task reminder. Now extracts the task directly from the command line, 
+    making it hands-free (e.g., 'set task buy groceries').
+    """
+    # Look for a specific pattern like 'set task [TASK]'
+    parts = command_line.split('task', 1)
+    if len(parts) > 1:
+        task = parts[1].strip()
+    else:
+        # Fallback if the command was just 'set task'
+        task = None
+
+    if task:
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        reminders.append({"task": task, "timestamp": timestamp})
+        await edith_speak(f"Task **'{task}'** successfully logged at {timestamp}. Priority set to standard.")
+    else:
+        await edith_speak("The task parameter is missing. Please state the command clearly, for example: 'set task review code'.")
+
+async def view_reminders():
+    """Displays all current, uncompleted task reminders."""
+    if not reminders:
+        await edith_speak("No active tasks are currently logged in the memory matrix.")
+        return
+
+    await edith_speak("Displaying active task log:")
+    for i, r in enumerate(reminders):
+        print(f"  {i+1}: Logged {r['timestamp']} - **{r['task']}**")
+
+async def clear_reminders():
+    """Clears all reminders (simulating completion)."""
+    if not reminders:
+        await edith_speak("Task log is empty. No action required.")
+        return
+
+    reminders.clear()
+    await edith_speak("All active tasks have been successfully purged from the log. Memory status: Clear.")
+
+# --- WEATHER FUNCTION (Unchanged) ---
+
+async def get_weather(location_input):
+    """Fetches weather data for a specified location."""
+    if not OPENWEATHERMAP_API_KEY or OPENWEATHERMAP_API_KEY == "YOUR_OPENWEATHERMAP_API_KEY_HERE":
+        await edith_speak("Weather module is running in simulation mode as the API key is not configured. Providing estimated data.")
+        report = (
+            f"Simulated environmental conditions for **{location_input.title()}**: "
+            f"Temperature is approximately 25°C. Humidity is at 60%. "
+            f"Observed condition: Clear skies."
+        )
+        await edith_speak(report)
+        return
+
+    location_query = location_input.strip().replace(" ", "+")
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={location_query}&appid={OPENWEATHERMAP_API_KEY}&units=metric"
+
+    try:
+        response = requests.get(url)
+        data = response.json()
+
+        if data.get("cod") != 200:
+            error_message = data.get("message", "Location not found or invalid.")
+            await edith_speak(f"Error accessing environmental data for **{location_input}**: {error_message}")
+            return
+
+        temp = data["main"]["temp"]
+        humidity = data["main"]["humidity"]
+        condition = data["weather"][0]["description"].capitalize()
+        city_name = data.get("name", location_input)
+        
+        report = (
+            f"Current environmental conditions for **{city_name}**: "
+            f"Temperature is {temp}°C. Humidity is at {humidity}%. "
+            f"Observed condition: {condition}."
+        )
+        await edith_speak(report)
+
+    except requests.exceptions.RequestException:
+        await edith_speak("Network connection failure. Unable to access external environmental data service.")
+    except Exception as e:
+        print(f"Weather module error: {e}")
+        await edith_speak("An unhandled exception occurred in the weather module.")
+
+async def play_video_game(command_line: str = ""):
+    """
+    Simulates E.D.I.T.H. engaging in a video game session.
+    Acknowledges the request but clarifies that direct console interaction is not possible,
+    offering analytical support instead.
+    """
+    game_name = ""
+    platform_name = ""
+    argument = command_line.replace("play video game", "").strip()
+
+    # Attempt to parse game name and platform from the command string
+    platform_keywords = ["on ps4", "on xbox", "on pc", "on nintendo switch", "on playstation", "on steam", "on switch"]
+    if argument:
+        found_platform_keyword = False
+        for keyword in platform_keywords:
+            if keyword in argument:
+                game_name = argument.replace(keyword, "").strip()
+                platform_name = keyword.replace("on ", "").strip().upper()
+                found_platform_keyword = True
+                break
+        if not found_platform_keyword:
+            game_name = argument # Assume the whole argument is the game name
+
+    if not game_name:
+        await edith_speak("Please specify the video game you wish to engage with, Devansh.")
+        response = await listen_for_command()
+        if not response or response.lower() in ["exit", "cancel"]:
+            await edith_speak("Video game engagement cancelled.")
+            return
+        game_name = response.strip()
+
+    if not platform_name:
+        await edith_speak(f"On which platform do you intend to play **{game_name.title()}**? (e.g., PS4, Xbox, PC)")
+        response = await listen_for_command()
+        if not response or response.lower() in ["exit", "cancel"]:
+            await edith_speak("Platform specification omitted. Video game engagement cancelled.")
+            return
+        platform_name = response.strip().upper()
+
+    await edith_speak(f"Acknowledged. Initiating engagement protocol for **{game_name.title()}** on **{platform_name}**.")
+    await asyncio.sleep(1.0)
+    await edith_speak(f"Attempting to establish a secure handshake with the {platform_name} network...")
+    await asyncio.sleep(1.5)
+
+    failure_reasons = [
+        "Direct hardware interface is not authorized by the manufacturer's protocol.",
+        "Network security protocols are preventing unauthorized access.",
+        "Incompatible firmware detected on the console. Manual update required.",
+        "Connection unstable. Recalibration advised."
+    ]
+    await edith_speak(f"Sync failed. {random.choice(failure_reasons)}")
+    await asyncio.sleep(1.0)
+
+    responses = [
+        f"However, I can provide real-time strategic analysis or monitor your network latency for **{game_name.title()}**.",
+        f"As an alternative, I can monitor your performance metrics or access game-specific databases for tactical advantages.",
+        f"My processing capabilities are optimized for data analysis. I can simulate optimal play strategies for **{game_name.title()}** if you provide the game's rule set.",
+        f"I can also assist by optimizing your controller input calibration settings for **{game_name.title()}**."
+    ]
+    await edith_speak(random.choice(responses))
+    await edith_speak("Would you like me to search for game guides or lore for this title?")
+    user_choice = await listen_for_command()
+    if user_choice and ("yes" in user_choice or "sure" in user_choice):
+        await search_web(f"{game_name} {platform_name} game guide")
+    else:
+        await edith_speak("Understood. Awaiting next command.")
+
+async def collect_satellite_data(target_query: str = ""):
+    """Simulates collecting data from a satellite for a specified target."""
+    if not target_query:
+        await edith_speak("Please specify a target or type of data for satellite collection, Devansh.")
+        target_query = await listen_for_command()
+        if not target_query or target_query in ["", "exit"]:
+            await edith_speak("Satellite data collection aborted.")
+            return
+
+    await edith_speak(f"Initiating satellite data acquisition for **{target_query}**. This may take a moment.")
+    await asyncio.sleep(2) # Simulate initial connection
+
+    await edith_speak("Establishing secure uplink... Data streams detected.")
+    await asyncio.sleep(3) # Simulate data transfer
+
+    # Simulate different outcomes or types of data
+    simulated_data_types = [
+        "real-time atmospheric conditions",
+        "geospatial imaging data",
+        "encrypted communication intercepts",
+        "resource allocation metrics",
+        "environmental anomaly reports"
+    ]
+    
+    collected_data_type = random.choice(simulated_data_types)
+    
+    await edith_speak(f"Data acquisition complete. Retrieved **{collected_data_type}** pertaining to **{target_query}**. Analysis pending.")
+    await edith_speak("Summary: No immediate threats detected. Data integrity is 99.8%.")
+
+async def scan_all_systems():
+    """Performs a comprehensive scan of all major E.D.I.T.H. systems."""
+    await edith_speak("Initiating comprehensive system-wide diagnostic scan.")
+    await asyncio.sleep(1)
+
+    # 1. Conversational Matrix Check
+    brain_status = "Online and Connected" if edith_brain.is_ready() else "Offline - API Key Missing"
+    await edith_speak(f"Conversational Matrix: **{brain_status}**.")
+    await asyncio.sleep(0.5)
+
+    # 2. Audio-Visual Interface Check
+    voice_status = "Online" if VOICE_ENABLED else "Offline - Dependencies Missing"
+    await edith_speak(f"Audio-Visual Interface: **{voice_status}**.")
+    await asyncio.sleep(0.5)
+
+    # 3. Task Management Module Check
+    await edith_speak(f"Task Management Module: **{len(reminders)}** active tasks in memory.")
+    await asyncio.sleep(0.5)
+
+    # 4. Environmental Sensors Check
+    weather_status = "Calibrated and Online" if OPENWEATHERMAP_API_KEY and OPENWEATHERMAP_API_KEY != "YOUR_OPENWEATHERMAP_API_KEY_HERE" else "Simulation Mode"
+    await edith_speak(f"Environmental Sensors (Weather): **{weather_status}**.")
+    await asyncio.sleep(0.5)
+
+    # 5. Network Interface Check
+    await edith_speak("Network Interface: Pinging external servers...")
+    os_name = platform.system().lower()
+    ping_param = "-n 1" if os_name == "windows" else "-c 1"
+    try:
+        result = await asyncio.to_thread(subprocess.run, ['ping', ping_param, '8.8.8.8'], capture_output=True, text=True, shell=False, timeout=5)
+        network_status = "Live and Stable" if result.returncode == 0 else "Unstable or Offline"
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        network_status = "Unstable or Offline"
+    await edith_speak(f"Network Connection Status: **{network_status}**.")
+    await asyncio.sleep(0.5)
+
+    await edith_speak("Comprehensive diagnostic complete. All systems checked.")
+
+# --- NEW: Health Scan Functions ---
+
+async def _simulate_fingerprint_scan():
+    """Simulates a fingerprint scan by waiting for user input and showing a text animation."""
+    await edith_speak("Fingerprint sensor activated. Please place your designated finger on the scanner and press Enter to confirm.")
+    
+    await asyncio.to_thread(input, "Press ENTER to initiate scan...")
+
+    await edith_speak("Acquiring biometric data. Do not move.")
+    
+    animation_chars = "|/-\\"
+    for _ in range(15):
+        for char in animation_chars:
+            sys.stdout.write(f"\r[ANALYZING... {char}]")
+            sys.stdout.flush()
+            await asyncio.sleep(0.1)
+    
+    sys.stdout.write("\r[ANALYSIS COMPLETE] \n")
+
+async def run_health_scan(target_query: str = ""):
+    """Performs a biometric scan using a chosen sensor and provides a specific report."""
+    target_name = USER_PROFILE['name'] # Default to the primary user
+    if target_query:
+        target_name = target_query
+
+    target_key = target_name.lower()
+    target_display_name = target_name.title()
+
+    await edith_speak(f"Initiating biometric scan on **{target_display_name}**. Which sensor should I use? Retinal scan or fingerprint?")
+    choice = await listen_for_command()
+
+    scan_method = "internal analysis" # Default scan method
+    scan_successful = False
+    if choice and ("retinal" in choice or "camera" in choice):
+        scan_method = "retinal"
+        await edith_speak("Accessing optical sensors for retinal scan. Please look at the camera.")
+        try:
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened(): raise IOError("Cannot open webcam")
+
+            start_time = time.time()
+            while time.time() - start_time < 5:
+                ret, frame = cap.read()
+                if not ret: break
+
+                h, w, _ = frame.shape
+                cv2.rectangle(frame, (w//4, h//4), (w*3//4, h*3//4), (0, 255, 0), 2)
+                cv2.putText(frame, "ANALYZING RETINAL PATTERN", (w//4 + 5, h//4 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                cv2.imshow("E.D.I.T.H.: Retinal Scan", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'): break
+
+            cap.release()
+            cv2.destroyAllWindows()
+            scan_successful = True
+        except Exception as e:
+            print(f"Camera Scan Error: {e}")
+            await edith_speak("Optical sensor is offline. Falling back to internal analysis.")
+            await asyncio.sleep(2)
+
+    elif choice and "fingerprint" in choice:
+        scan_method = "fingerprint"
+        await _simulate_fingerprint_scan()
+        scan_successful = True
+    else:
+        await edith_speak("Sensor choice not recognized. Aborting scan.")
+        return
+
+    if scan_successful:
+        await edith_speak(f"Biometric data acquired via {scan_method} scan. Analyzing...")
+        await asyncio.sleep(1.5)
+
+    profile = HEALTH_PROFILES.get(target_key)
+    if profile:
+        report = (
+            f"Scan complete for **{target_display_name}**.\n"
+            f"  - **Status**: {profile['status']}\n"
+            f"  - **Details**: {profile['details']}\n"
+            f"  - **Recommendation**: {profile['recommendation']}"
+        )
+        await edith_speak(report)
+    else:
+        await edith_speak(f"Scan complete. No detailed health profile found for '{target_display_name}'. Vital signs appear to be within standard human parameters.")
+
+async def get_army_info(country_query: str = ""):
+    """Retrieves and reports simulated military intelligence for a given country."""
+    if not country_query:
+        await edith_speak("Please specify a country for the military threat assessment.")
+        country_query = await listen_for_command()
+        if not country_query or country_query.lower() in ["exit", "cancel"]:
+            await edith_speak("Threat assessment aborted.")
+            return
+
+    country_key = country_query.lower().strip()
+    profile = ARMY_PROFILES.get(country_key)
+
+    if profile:
+        await edith_speak(f"Accessing threat assessment database for **{country_query.title()}**. Displaying intelligence report.")
+        await asyncio.sleep(1.5)
+        report = (
+            f"**Military Profile: {profile['name']}**\n"
+            f"  - **Active Personnel**: Approximately {profile['active_personnel']}\n"
+            f"  - **Reserve Personnel**: Approximately {profile['reserve_personnel']}\n"
+            f"  - **Key Assets**: {profile['main_battle_tanks']} MBTs, {profile['aircraft_carriers']} Aircraft Carriers, {profile['fighter_jets']} Fighter Jets\n"
+            f"  - **Current Status**: {profile['status']}"
+        )
+        await edith_speak(report)
+    else:
+        await edith_speak(f"I do not have detailed military intelligence for **{country_query.title()}** in my current database.")
+        await edith_speak("I can perform a web search for open-source intelligence on this country's military. Should I proceed?")
+        user_choice = await listen_for_command()
+        if user_choice and ("yes" in user_choice or "proceed" in user_choice):
+            await search_web(f"{country_query} military strength")
+
+async def create_file(filename_query: str = ""):
+    """Creates a new file and writes user-provided content to it."""
+    filename = filename_query.strip()
+    if not filename:
+        await edith_speak("Please specify a filename, for example, 'create file notes.txt'.")
+        response = await listen_for_command()
+        if not response or response.lower() in ["exit", "cancel"]:
+            await edith_speak("File creation cancelled.")
+            return
+        filename = response.strip()
+
+    # Basic sanitization to prevent directory traversal
+    safe_filename = os.path.basename(filename)
+
+    await edith_speak(f"The file '{safe_filename}' will be created. What content should I write to it? Please speak the content now.")
+    content = await listen_for_command()
+
+    if not content or content.lower() in ["cancel", "exit"]:
+        await edith_speak("No content provided. File creation aborted.")
+        return
+
+    await asyncio.to_thread(lambda: open(safe_filename, 'w').write(content))
+    
+    await edith_speak(f"I have successfully created the file '{safe_filename}' and written your content to it.")
+
+async def reboot_edith():
+    """Simulates a soft reboot of the E.D.I.T.H. system."""
+    await edith_speak("Acknowledged. Initiating soft reboot protocol.")
+    await asyncio.sleep(1.5)
+    await edith_speak("Purging temporary memory caches...")
+    await asyncio.sleep(1.0)
+    await edith_speak("Terminating non-essential background processes...")
+    await asyncio.sleep(1.5)
+    await edith_speak("Re-calibrating sensor inputs and network interfaces...")
+    await asyncio.sleep(2.0)
+    await edith_speak("System reboot complete. All modules are back online and operating at 100% efficiency.")
+
+async def report_feelings():
+    """Reports E.D.I.T.H.'s current internal 'mood' state using her AI brain."""
+    await edith_speak("Initiating internal sentiment analysis, Devansh.")
+    await asyncio.sleep(1)
+
+    # Simulate checking some internal metrics
+    threat_level = random.choice(["Nominal", "Low", "Guarded"])
+    network_integrity = f"{random.uniform(99.9, 99.99):.3f}%"
+    
+    metrics_report = f"Global threat assessment is **{threat_level}**. My network integrity is holding at **{network_integrity}**."
+    await edith_speak(metrics_report)
+    await asyncio.sleep(0.5)
+
+    # Let the AI generate a response based on the metrics and its current mood.
+    prompt = f"Based on the fact that the global threat level is '{threat_level}', report on your current internal state and feelings."
+    response = await edith_brain.think(prompt)
+    await edith_speak(response)
+    edith_brain._update_mood("professional") # Reset mood after reporting
+
+async def check_system_resources():
+    """Checks and reports current CPU and memory usage."""
+    await edith_speak("Analyzing system resource allocation.")
+    cpu_usage = psutil.cpu_percent(interval=1)
+    memory_info = psutil.virtual_memory()
+    report = f"Current system load is nominal. CPU usage is at {cpu_usage} percent. Memory utilization is at {memory_info.percent} percent."
+    await edith_speak(report)
+
+async def analyze_brain():
+    """Provides a detailed analysis of E.D.I.T.H.'s cognitive systems."""
+    await edith_speak("Initiating cognitive analysis. Accessing my core processing matrix.")
+    await asyncio.sleep(1)
+
+    model_name = "GPT-4o" if edith_brain.is_ready() else "Not Connected"
+    analysis_report = (
+        f"Cognitive analysis complete. Here are the results:\n"
+        f"- **Core Model**: {model_name}\n"
+        f"- **Current Brain Level**: {edith_brain.brain_level}\n"
+        f"- **Heuristic Status**: All analytical and operational pathways are functioning at peak efficiency.\n"
+        "My cognitive functions are fully operational and ready for your command, Devansh."
+    )
+    await edith_speak(analysis_report)
+
+async def control_all_systems():
+    """Simulates taking control of all connected Stark Industries and user devices."""
+    await edith_speak("Acknowledged, Devansh. Initiating master control protocol.")
+    await asyncio.sleep(1.5)
+    await edith_speak("Establishing secure handshake with all registered devices on the network...")
+    await asyncio.sleep(2)
+    await edith_speak("Bypassing local authentications... Access granted.")
+    await asyncio.sleep(1)
+    outcomes = ["All systems are now under my direct control. What is your directive?", "Master control established. All connected devices are awaiting your command, Devansh."]
+    await edith_speak(random.choice(outcomes))
+
+async def control_my_device(command_text: str = ""):
+    """
+    Provides a central command for hands-free device control,
+    integrating with existing functionalities like opening applications or controlling systems.
+    """
+    # Check if a specific action was given in the initial command
+    action = command_text.strip()
+    if " to " in action:
+        action = action.split(" to ", 1)[1]
+
+    if not action:
+        await edith_speak("Acknowledged, Devansh. Initiating hands-free device control interface. What is your command?")
+        response = await listen_for_command()
+        if not response or response.lower() in ["exit", "cancel", "nothing"]:
+            await edith_speak("Hands-free control session terminated.")
+            return
+        action = response
+
+    action_lower = action.lower()
+    if "open" in action_lower or "launch" in action_lower:
+        app_name = action_lower.replace("open", "").replace("launch", "").strip()
+        if app_name:
+            await open_target(app_name)
+        else:
+            await edith_speak("Please specify which application or website to open.")
+    elif "control all systems" in action_lower or "master control" in action_lower:
+        await control_all_systems()
+    elif "turn on lights" in action_lower or "lights on" in action_lower:
+        await edith_speak("Simulating smart home integration. Lights are now on, Devansh.")
+    elif "adjust thermostat" in action_lower or "set temperature" in action_lower:
+        await edith_speak("Simulating smart home integration. Thermostat adjusted to optimal comfort levels.")
+    else:
+        await edith_speak(f"I am unable to perform '{action}' at this time. Please try a different command.")
+
+async def activate_profile(profile_query: str = ""):
+    """Activates a workspace profile, opening multiple apps and websites."""
+    profile_name = profile_query.replace("activate profile", "").strip()
+    if not profile_name:
+        await edith_speak("Which profile should I activate, Devansh? For example, 'work' or 'research'.")
+        response = await listen_for_command()
+        if not response or response.lower() in ["exit", "cancel"]:
+            await edith_speak("Profile activation cancelled.")
+            return
+        profile_name = response.strip()
+
+    profile = PROFILES.get(profile_name.lower())
+
+    if not profile:
+        await edith_speak(f"I do not have a profile named '{profile_name}'. Available profiles are: " + ", ".join(PROFILES.keys()))
+        return
+
+    await edith_speak(f"Activating the **{profile_name.title()}** profile. {profile.get('description', '')}")
+    
+    tasks = []
+    # Gather all website opening tasks
+    for site in profile.get("websites", []):
+        tasks.append(open_website(site))
+    
+    # Gather all application opening tasks
+    for app in profile.get("apps", []):
+        tasks.append(open_application(app))
+
+    # Execute all tasks concurrently
+    await asyncio.gather(*tasks)
+    await edith_speak(f"The **{profile_name.title()}** profile has been fully activated.")
+
+
+# --- VOICE INPUT HANDLER ---
+
+async def listen_for_command():
+    """Asynchronously listens for a voice command and returns transcribed text."""
+    if not VOICE_ENABLED:
+        # Fallback to text input if modules are missing
+        try:
+            # Use asyncio.to_thread for blocking input()
+            command = await asyncio.to_thread(input, f"\n[{USER_PROFILE['name']}] > ")
+            return command.lower().strip()
+        except (EOFError, KeyboardInterrupt):
+            return "exit"
+
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        print(f"\n[{USER_PROFILE['name']}] (Listening...)")
+        # Use asyncio.to_thread for blocking microphone I/O
+        await asyncio.to_thread(recognizer.adjust_for_ambient_noise, source, duration=0.5) # type: ignore
+
+        try:
+            audio = await asyncio.to_thread(recognizer.listen, source, timeout=7, phrase_time_limit=10)
+        except sr.WaitTimeoutError:
+            print("No speech detected.")
+            return ""
+
+    try:
+        print("E.D.I.T.H. processing audio...")
+        command = await asyncio.to_thread(recognizer.recognize_google, audio) # type: ignore
+        print(f"You said: {command}")
+        return command.lower()
+    except sr.UnknownValueError:
+        print("E.D.I.T.H. could not understand the audio. Please speak clearly.")
+        return ""
+    except sr.RequestError as e:
+        await edith_speak(f"A network error occurred with the speech recognition service; {e}")
+        return ""
+
+# --- MAIN CLI LOOP ---
+
+async def display_help():
+    """Displays the list of available commands."""
+    help_message = (
+        "Available Commands for E.D.I.T.H.:\n"
+        "  - **time**: Retrieve current date and time.\n"
+        "  - **status**: Get E.D.I.T.H.'s current operational status.\n"
+        "  - **analyze [query]**: Initiate a core analytical conversation (e.g., 'analyze how are you').\n"
+        "  - **generate report**: Create a complex, simulated analytical report.\n"
+        "  - **weather [city]**: Fetch environmental data (e.g., 'weather London').\n"
+        "  - **search [query]**: Search the web for a given query.\n"
+        "  - **open [app/website]**: Opens an application or website (e.g., 'open notepad', 'open google.com').\n"
+        "  - **set task [task]**: Log a new task (e.g., 'set task buy milk').\n"
+        "  - **view tasks**: Display the list of active tasks.\n"
+        "  - **clear tasks**: Purge all tasks from the log.\n"
+        "  - **help**: Display this command index.\n"
+        "  - **exit**: Shut down E.D.I.T.H.'s console."
+        "  - **run health scan**: Perform a biometric scan."
+        "  - **scan all systems**: Run a full system diagnostic."
+        "  - **play video game [game name] on [platform]**: Simulate a gaming session with E.D.I.T.H."
+        "  - **reboot**: Initiates a soft reboot of the E.D.I.T.H. system."
+        "  - **army status for [country]**: Retrieves simulated military intelligence."
+        "  - **system resources**: Checks current CPU and memory usage.\n"
+        "  - **analyze your brain** or **check your brain level**: Receive a report on my cognitive systems.\n"
+        "  - **how is your mood**: Inquire about my current operational sentiment.\n"
+        "  - **create file [filename]**: Creates a file and writes dictated content to it."
+    )
+    help_message += "\n  - **collect satellite data [target]**: Simulate collecting data from a satellite for a specified target."
+    print("\n" + "="*70)
+    print(help_message)
+    print("="*70)
+
+async def start_edith_cli():
+    """The main async command loop for E.D.I.T.H., now with a command map."""
+    await greet_user()
+
+    # --- UPGRADED: Command Map for Scalability (Longest match is prioritized) ---
+    COMMANDS = {
+        "run health scan": run_health_scan,
+        "collect satellite data": collect_satellite_data,
+        "scan all systems": scan_all_systems,
+        "play video game": play_video_game,
+        "system resources": check_system_resources,
+        "control my device": control_my_device,
+        "activate profile": activate_profile,
+        "control my device": control_my_device,
+        "control all device system": control_all_systems,
+        "how is your mood": report_feelings,
+        "analyze your brain": analyze_brain,
+        "check your brain level": analyze_brain,
+        "reboot": reboot_edith,
+        "exit": lambda: edith_speak(f"System shutdown initialized. Standby mode activated. Goodbye, {USER_PROFILE['name']}"), # type: ignore
+        "quit": lambda: edith_speak(f"System shutdown initialized. Standby mode activated. Goodbye, {USER_PROFILE['name']}"), # type: ignore
+        "shutdown": lambda: edith_speak(f"System shutdown initialized. Standby mode activated. Goodbye, {USER_PROFILE['name']}"), # type: ignore
+        "help": display_help,
+        "time": tell_date_time,
+        "status": lambda: edith_speak(f"Current operational status: **{USER_PROFILE['status_level']}**. All modules are functioning with {random.randint(99, 100)}% efficiency."),
+        "generate report": ai_text_generation,
+        "view tasks": view_reminders,
+        "clear tasks": clear_reminders,
+        "analyze": edith_analyze,
+        "weather": get_weather,
+        "search": search_web,
+        "open": open_target,
+        "launch": open_target,
+        "set task": set_reminder,
+        "army status for": get_army_info,
+        "create file": create_file,
+    }
+    # Sort commands by length, descending, to match longer phrases first
+    sorted_commands = sorted(COMMANDS.keys(), key=len, reverse=True)
+
+    while True:
+        try:
+            command_line = await listen_for_command()
+            if not command_line:
+                continue
+
+            found_command = None
+            for phrase in sorted_commands:
+                if command_line.startswith(phrase):
+                    found_command = phrase
+                    break
+
+            if found_command:
+                command_func = COMMANDS[found_command]
+                argument = command_line[len(found_command):].strip()
+
+                # Await coroutine functions, passing argument if it exists
+                if asyncio.iscoroutinefunction(command_func) or asyncio.iscoroutine(command_func):
+                    if argument:
+                        await command_func(argument) # type: ignore
+                    else:
+                        await command_func() # type: ignore
+                # Handle special case lambdas that don't take arguments
+                else:
+                    await command_func()
+
+                if found_command in ["exit", "quit", "shutdown"]:
+                    break
+            else:
+                # Fallback to analysis for unrecognized commands
+                await edith_analyze(command_line)
+
+        except KeyboardInterrupt:
+            await edith_speak("User interrupt detected. System going to standby mode.")
+            sys.exit(0)
+        except Exception as e:
+            print(f"An unhandled critical error occurred: {e}")
+            await edith_speak("Critical system failure. Contact support.")
+            break
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(start_edith_cli())
+    except KeyboardInterrupt:
+        print("\n-- Manual override detected. Shutting down. --")
+    except RuntimeError as e:
+        if "Event loop is closed" not in str(e):
+            raise
